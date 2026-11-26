@@ -1,0 +1,6 @@
+{
+  "name": "Bramble: The Mosswood Trail",
+  "description": "A storybook 2D forest platformer starring Bramble the hedgehog knight. Leap across mossy platforms, gather golden acorns, and reach the castle gates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
