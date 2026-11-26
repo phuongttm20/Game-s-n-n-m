@@ -1,0 +1,52 @@
+{
+  "entities": {
+    "PlayerProfile": {
+      "title": "PlayerProfile",
+      "description": "Stores a signed-in player's Bramble acorn progress and unlocked stage.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the player.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Player display name.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "bestStageAcorns": {
+          "type": "array",
+          "description": "Best acorn counts across the 3 stages."
+        },
+        "highestStageUnlocked": {
+          "type": "integer",
+          "description": "Highest unlocked stage index (0 to 2)."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last save."
+        }
+      },
+      "required": [
+        "uid",
+        "displayName",
+        "bestStageAcorns",
+        "highestStageUnlocked",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/playerProfiles/{userId}": {
+      "schema": {
+        "$ref": "#/entities/PlayerProfile"
+      },
+      "description": "Private player progress document keyed by Firebase Auth UID."
+    }
+  }
+}

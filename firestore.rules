@@ -1,0 +1,67 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidAcornCount(n) {
+      return n is int && n >= 0 && n <= 12;
+    }
+
+    function isValidPlayerProfile(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'bestStageAcorns', 'highestStageUnlocked', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'bestStageAcorns', 'highestStageUnlocked', 'updatedAt'])
+        && data.uid is string
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 80
+        && data.bestStageAcorns is list
+        && data.bestStageAcorns.size() == 3
+        && isValidAcornCount(data.bestStageAcorns[0])
+        && isValidAcornCount(data.bestStageAcorns[1])
+        && isValidAcornCount(data.bestStageAcorns[2])
+        && data.highestStageUnlocked is int
+        && data.highestStageUnlocked >= 0
+        && data.highestStageUnlocked <= 2
+        && data.updatedAt == request.time;
+    }
+
+    match /playerProfiles/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isValidId(userId)
+        && isOwner(userId)
+        && isValidPlayerProfile(incoming());
+      allow update: if isValidId(userId)
+        && isOwner(userId)
+        && isValidPlayerProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'bestStageAcorns', 'highestStageUnlocked', 'updatedAt']);
+      allow delete: if false;
+    }
+  }
+}

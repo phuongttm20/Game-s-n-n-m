@@ -1,6 +1,14 @@
+import { onAuthStateChanged, User } from 'firebase/auth';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { GameHUD } from './components/GameHUD';
 import { GameModals } from './components/GameModals';
+import {
+  auth,
+  loadOrCreatePlayerProgress,
+  savePlayerProgress,
+  signInWithGoogle,
+  signOutPlayer,
+} from './firebase';
 import { LEVELS } from './game/levels';
 import {
   drawAcorn,
@@ -138,9 +146,17 @@ export default function App() {
 
   const [muted, setMuted] = useState<boolean>(false);
   const [showTouchControls, setShowTouchControls] = useState<boolean>(true);
-  const [stageAcornScores, setStageAcornScores] = useState<number[]>(() =>
-    LEVELS.map(() => 0)
-  );
+  const [stageAcornScores, setStageAcornScores] = useState<[number, number, number]>([
+    0, 0, 0,
+  ]);
+  const stageAcornScoresRef = useRef<[number, number, number]>([0, 0, 0]);
+  const highestStageUnlockedRef = useRef<number>(0);
+
+  const [user, setUser] = useState<User | null>(null);
+  const userRef = useRef<User | null>(null);
+  const [authReady, setAuthReady] = useState<boolean>(false);
+  const [isSigningIn, setIsSigningIn] = useState<boolean>(false);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   const worldRef = useRef<RuntimeWorld>(buildRuntimeWorld(LEVELS[0]));
 
@@ -207,16 +223,25 @@ export default function App() {
   );
 
   const handleStartGame = useCallback(() => {
+    if (!userRef.current) return;
     soundEngine.unlock();
     loadStage(selectedStage, 'PLAYING');
   }, [loadStage, selectedStage]);
 
   const handleRestartStage = useCallback(() => {
+    if (!userRef.current) {
+      setStateSynced('TITLE_MENU');
+      return;
+    }
     soundEngine.unlock();
     loadStage(stageIndexRef.current, 'PLAYING');
-  }, [loadStage]);
+  }, [loadStage, setStateSynced]);
 
   const handleNextStage = useCallback(() => {
+    if (!userRef.current) {
+      setStateSynced('TITLE_MENU');
+      return;
+    }
     soundEngine.unlock();
     const nextIdx = stageIndexRef.current + 1;
     if (nextIdx < LEVELS.length) {
@@ -229,6 +254,56 @@ export default function App() {
   const handleBackToTitle = useCallback(() => {
     loadStage(stageIndexRef.current, 'TITLE_MENU');
   }, [loadStage]);
+
+  const handleGoogleSignIn = useCallback(async () => {
+    setAuthError(null);
+    setIsSigningIn(true);
+    try {
+      await signInWithGoogle();
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message.includes('popup-closed-by-user')
+          ? 'Bạn đã đóng cửa sổ đăng nhập Google. Vui lòng thử lại.'
+          : 'Không thể đăng nhập bằng Google. Vui lòng cho phép popup và thử lại.';
+      setAuthError(message);
+    } finally {
+      setIsSigningIn(false);
+    }
+  }, []);
+
+  const handleSignOut = useCallback(async () => {
+    await signOutPlayer();
+    setStateSynced('TITLE_MENU');
+  }, [setStateSynced]);
+
+  // Listen to Firebase Auth state & load user progress from Firestore
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (nextUser) => {
+      userRef.current = nextUser;
+      setUser(nextUser);
+      setAuthReady(true);
+
+      if (!nextUser) {
+        const emptyScores: [number, number, number] = [0, 0, 0];
+        stageAcornScoresRef.current = emptyScores;
+        highestStageUnlockedRef.current = 0;
+        setStageAcornScores(emptyScores);
+        setStateSynced('TITLE_MENU');
+        return;
+      }
+
+      try {
+        const progress = await loadOrCreatePlayerProgress(nextUser);
+        stageAcornScoresRef.current = progress.bestStageAcorns;
+        highestStageUnlockedRef.current = progress.highestStageUnlocked;
+        setStageAcornScores(progress.bestStageAcorns);
+      } catch (err) {
+        console.error('Failed to load player progress:', err);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [setStateSynced]);
 
   const handleToggleMute = useCallback(() => {
     setMuted((prev) => {
@@ -404,16 +479,34 @@ export default function App() {
         w.player.animTime += dt;
         if (w.celebratingTimer <= 0) {
           const collected = w.acorns.filter((a) => a.collected).length;
-          setStageAcornScores((prev) => {
-            const copy = [...prev];
-            copy[stageIndexRef.current] = Math.max(
-              copy[stageIndexRef.current] ?? 0,
-              collected
-            );
-            return copy;
-          });
-          syncHudFromWorld(w, stageIndexRef.current);
-          if (stageIndexRef.current >= LEVELS.length - 1) {
+          const idx = stageIndexRef.current;
+          const nextUnlocked = Math.max(
+            highestStageUnlockedRef.current,
+            Math.min(LEVELS.length - 1, idx + 1)
+          );
+          highestStageUnlockedRef.current = nextUnlocked;
+
+          const prevScores = stageAcornScoresRef.current;
+          const updated: [number, number, number] = [
+            prevScores[0] ?? 0,
+            prevScores[1] ?? 0,
+            prevScores[2] ?? 0,
+          ];
+          updated[idx] = Math.max(updated[idx], collected);
+          stageAcornScoresRef.current = updated;
+          setStageAcornScores(updated);
+
+          if (userRef.current) {
+            void savePlayerProgress(userRef.current, {
+              bestStageAcorns: updated,
+              highestStageUnlocked: nextUnlocked,
+            }).catch((err) => {
+              console.error('Failed to save player progress:', err);
+            });
+          }
+
+          syncHudFromWorld(w, idx);
+          if (idx >= LEVELS.length - 1) {
             setStateSynced('VICTORY');
           } else {
             setStateSynced('STAGE_CLEAR');
@@ -857,7 +950,7 @@ export default function App() {
         aria-label="Bramble: The Mosswood Trail game canvas"
       />
 
-      {gameState === 'PLAYING' && (
+      {gameState === 'PLAYING' && user && (
         <GameHUD
           hud={hud}
           muted={muted}
@@ -890,6 +983,13 @@ export default function App() {
         hud={hud}
         selectedStage={selectedStage}
         totalAcornsAllStages={totalAcornsAllStages}
+        bestStageAcorns={stageAcornScores}
+        user={user}
+        authReady={authReady}
+        isSigningIn={isSigningIn}
+        authError={authError}
+        onGoogleSignIn={handleGoogleSignIn}
+        onSignOut={handleSignOut}
         onSelectStage={(idx) => loadStage(idx, 'TITLE_MENU')}
         onStartGame={handleStartGame}
         onResume={() => setStateSynced('PLAYING')}
